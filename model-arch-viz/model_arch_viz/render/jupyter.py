@@ -1,5 +1,3 @@
-"""Jupyter display helpers."""
-
 from __future__ import annotations
 
 from ..ir import Architecture

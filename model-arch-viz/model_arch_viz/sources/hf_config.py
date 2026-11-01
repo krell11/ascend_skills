@@ -6,6 +6,7 @@ from typing import Any
 
 from ..formulas import ops_for_kind
 from ..ir import Architecture, Layer, Op, TensorSpec
+from .deepseek import architecture_from_deepseek
 from .paper_ir import fill_missing_ops
 
 
@@ -28,6 +29,11 @@ def from_config_file(path: str | Path) -> Architecture:
 def architecture_from_config(
     cfg: dict[str, Any], *, source: str = "config.json"
 ) -> Architecture:
+    cfg = _flatten_hf_config(cfg)
+    built = architecture_from_deepseek(cfg, source=source)
+    if built is not None:
+        return built
+
     model_type = str(cfg.get("model_type") or cfg.get("architectures", ["model"])[0])
     name = str(
         cfg.get("_name_or_path")
@@ -67,7 +73,12 @@ def architecture_from_config(
     )
     vocab = int(cfg.get("vocab_size") or 0)
     head_dim = int(cfg.get("head_dim") or (hidden // heads if heads else 0) or 0)
-    num_experts = int(cfg.get("num_experts") or cfg.get("num_local_experts") or 0)
+    num_experts = int(
+        cfg.get("num_experts")
+        or cfg.get("num_local_experts")
+        or cfg.get("n_routed_experts")
+        or 0
+    )
     tie = bool(cfg.get("tie_word_embeddings", False))
     act = str(cfg.get("hidden_act") or cfg.get("activation_function") or "")
 
@@ -282,6 +293,24 @@ def _notes(cfg: dict[str, Any], model_type: str) -> list[str]:
     if rope:
         notes.append(f"rope_theta={rope}")
     return notes
+
+
+def _flatten_hf_config(cfg: dict[str, Any]) -> dict[str, Any]:
+    """Lift a nested ``text_config`` up so language fields are readable.
+
+    Multimodal configs keep the language stack under ``text_config`` and the
+    tower under ``vision_config``. Top-level keys (architecture name, vision,
+    quantization) win when both sides set the same field.
+    """
+    text = cfg.get("text_config")
+    if not isinstance(text, dict):
+        return cfg
+    flat = dict(text)
+    for key, value in cfg.items():
+        if key == "text_config":
+            continue
+        flat[key] = value
+    return flat
 
 
 def _load_config_dict(

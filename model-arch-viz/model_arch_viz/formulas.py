@@ -256,6 +256,145 @@ def ops_for_kind(kind: str, ctx: dict[str, Any] | None = None) -> list[Op]:
                 "Affine map: multiply by a weight matrix and optionally add a bias.",
             ),
         ],
+        "mla": [
+            Op(
+                "q_down",
+                f"c_Q = RMSNorm(h W_DQ)    [{H}] → [d_q]",
+                "Compress the query through a low-rank down projection, then normalize the latent. Training stores a narrow activation instead of a full per-head query.",
+            ),
+            Op(
+                "q_up",
+                "q^C = c_Q W_UQ,   q^R = RoPE(c_Q W_QR),   q = [q^C ; q^R]",
+                "Split the query latent into a content part and a rotary part. Only the rotary part is rotated with position.",
+            ),
+            Op(
+                "kv_down",
+                f"c_KV = RMSNorm(h W_DKV)    [{H}] → [d_c]",
+                "Keys and values share one low-rank latent. Inference caches this vector instead of a full per-head key and value.",
+            ),
+            Op(
+                "kv_up",
+                "k^C = c_KV W_UK,   v^C = c_KV W_UV",
+                "Up-projections recover per-head content keys and values. At inference those matrices can be absorbed into the query up-projection and the output projection.",
+            ),
+            Op(
+                "rope_key",
+                "k^R = RoPE(h W_KR),   k = [k^C ; k^R]",
+                "A small extra key carries position with RoPE and is shared by every head. It is cached next to the KV latent.",
+            ),
+            Op(
+                "scores",
+                "o_i = Σ_{j≤t} softmax(q_i · k_j / √(d_h + d_r)) v^C_j",
+                "Causal scaled dot-product attention. Position enters only through the rotary slices. The mixed vector is the content value.",
+            ),
+            Op(
+                "out",
+                f"u = W_O [o_1 ; … ; o_N]    → [{H}]",
+                "Concatenate heads and project back to the hidden size.",
+            ),
+        ],
+        "deepseek_moe": [
+            Op(
+                "affinity",
+                "s_i = sigmoid(u · e_i)",
+                "Each routed expert scores the token on its own with a sigmoid. The scores are not a softmax over the whole expert pool.",
+            ),
+            Op(
+                "balance",
+                "choose top-k by (s_i + b_i); mix with s_i only",
+                "A per-expert bias is added only while picking the top-k. The mix weight stays the original affinity, so load balance does not rewrite the gate.",
+            ),
+            Op(
+                "groups",
+                "keep the top groups, then the top-k experts inside them",
+                "Routed experts are split into groups. A token may enter only a few groups, which caps how many devices it talks to.",
+            ),
+            Op(
+                "experts",
+                "y_shared = SwiGLU_shared(u),   y_i = SwiGLU_i(u) for selected i",
+                "Shared experts always run. Each chosen routed expert is its own small SwiGLU.",
+            ),
+            Op(
+                "combine",
+                "y = y_shared + α · Σ g_i y_i,   g = renorm(s) over the selected experts",
+                "Add the shared expert to a scaled mixture of the routed experts. Selected sigmoid scores are normalized so the gates sum to one.",
+            ),
+        ],
+        "mtp": [
+            Op(
+                "combine",
+                f"h' = M [ RMSNorm(h_t) ; RMSNorm(Embed(token_{{t+1}})) ]",
+                "Concatenate the main-model state at this position with the embedding of the next token, then project back to the hidden size.",
+            ),
+            Op(
+                "block",
+                "h_mtp = Transformer(h')",
+                "One more transformer block keeps a causal chain at this extra prediction depth.",
+            ),
+            Op(
+                "predict",
+                f"P(token_{{t+2}}) = LMHead(h_mtp)",
+                "The shared output head predicts one further token. The module can be dropped at inference, or kept for speculative decoding.",
+            ),
+        ],
+        "csa2": [
+            Op(
+                "query",
+                f"c_Q = RMSNorm(h W_Qa) ;  q = c_Q W_Qb    [{H}] → [d_q] → [{N} × D]",
+                "Queries go through a low-rank down projection and RMSNorm, then up to one vector per head. Every layer computes its own query.",
+            ),
+            Op(
+                "window",
+                "kv = RMSNorm(h W_kv) ;  RoPE on the tail ;  attend the last window",
+                "A single key/value vector covers the local sliding window. This cache is per layer and is not compressed.",
+            ),
+            Op(
+                "compress",
+                "C = pool_r(kv) with a learned softmax gate",
+                "Every r tokens become one global KV latent. Ratio 0 skips this. Ratio 1 keeps one latent per token. Only KV-source layers build the latent; later layers reuse it.",
+            ),
+            Op(
+                "index",
+                "topk = Indexer(q_index, K_index) over compressed positions",
+                "A small indexer scores compressed positions and keeps the top ones. Full mode builds the keys. Reindex mode rescores a reused key cache. Reuse mode keeps the previous top-k.",
+            ),
+            Op(
+                "attend",
+                "o = sparse_attn(q, window KV ∪ selected compressed KV)",
+                "The query reads the local window and the selected compressed entries, then a grouped low-rank projection returns the hidden size.",
+            ),
+        ],
+        "mhc": [
+            Op(
+                "mix",
+                "X' = B X + C F(A_prev X) ;  (A, B, C) = H(X)",
+                "The residual is hc_mult parallel streams. This block applies the mix coefficients from the previous site, and predicts the coefficients the next site will use. B is Sinkhorn-normalized.",
+            ),
+        ],
+        "engram": [
+            Op(
+                "hash",
+                "ids = hash(n-grams of the token) across orders and heads",
+                "Each head hashes recent n-grams into a huge embedding table. The lookup is a memory read, not a layer of attention.",
+            ),
+            Op(
+                "gate",
+                "h ← h + sigmoid(signed_sqrt(match(h, key))) · value",
+                "The retrieved value is added to each residual stream, gated by how well the stream matches the retrieved key.",
+            ),
+        ],
+        "dspark": [
+            Op(
+                "draft",
+                "logits for the next block of positions, in one forward pass",
+                "A few extra sliding-window layers draft several future tokens at once. A small Markov head ties those draft tokens together.",
+            ),
+            Op(
+                "verify",
+                "accept a prefix using a confidence schedule",
+                "A confidence head estimates which draft prefix will survive verification. The backbone stays the source of truth.",
+            ),
+        ],
     }
 
     if kind in catalog:
@@ -289,6 +428,13 @@ def viz_kind_for(kind: str) -> str:
         "conv2d": "conv",
         "dropout": "dropout",
         "linear": "linear",
+        "mla": "mla",
+        "deepseek_moe": "deepseek_moe",
+        "mtp": "mtp",
+        "csa2": "csa2",
+        "mhc": "mhc",
+        "engram": "engram",
+        "dspark": "dspark",
     }
     return mapping.get(kind, "generic")
 
@@ -314,6 +460,10 @@ def io_for_kind(
         "lm_head": (
             [TensorSpec("X", [B, S, H])],
             [TensorSpec("logits", [B, S, V])],
+        ),
+        "mtp": (
+            [TensorSpec("h", [B, S, H]), TensorSpec("next_token", [B, S])],
+            [TensorSpec("logits_t_plus_2", [B, S, V])],
         ),
         "vit_patch": (
             [TensorSpec("image", [B, "C", "H_img", "W_img"])],
@@ -342,5 +492,12 @@ KNOWN_KINDS = sorted(
         "lm_head",
         "dropout",
         "linear",
+        "mla",
+        "deepseek_moe",
+        "mtp",
+        "csa2",
+        "mhc",
+        "engram",
+        "dspark",
     }
 )

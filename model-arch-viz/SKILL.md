@@ -21,21 +21,25 @@ as tensors. Prefer `config.json`; use `--meta` only for header shapes.
 
 ## Workflow
 
-1. **HF hub or local config** (default):
+1. **HF hub or local config** (default). This is the path for DeepSeek too:
+   V2/V3 latent attention and V4/V4.1 compressed attention are read from the
+   config fields (`text_config` included). Do not write a `.arch.json` for a
+   model whose config already carries the layer sizes and the schedule.
 
 ```bash
+python -m model_arch_viz from-config path/to/config.json -o architecture.html
 python -m model_arch_viz from-hf <org/model> -o architecture.html
 python -m model_arch_viz from-hf <org/model> --meta -o architecture.html
 ```
 
 ```python
-from model_arch_viz import from_hf, show
-arch = from_hf("Qwen/Qwen2.5-0.5B", meta=False)
+from model_arch_viz import from_config_json, from_hf, show
+arch = from_config_json("examples/config.json")
 show(arch)  # Jupyter
 ```
 
-2. **Paper**: extract an English IR JSON (see `examples/qwen2_tiny.arch.json`),
-   then:
+2. **Paper**, only when the config does not contain the math. Extract an English
+   IR JSON (see `examples/deepseek_v3.arch.json`), then:
 
 ```bash
 python -m model_arch_viz from-ir path/to/model.arch.json -o architecture.html
@@ -51,11 +55,15 @@ Empty `ops` are filled from `model_arch_viz/formulas.py` by `kind`.
 
 ## Widget contract
 
-- Every op shows **math** and a plain **explanation** beside it (use `Op.note`).
+- The full architecture stays visible on the left. Clicking a block jumps to
+  its first explanation.
+- The right pane walks one operation at a time: math, a plain explanation
+  (`Op.note`), and that layer's interactive strip. Previous / Next (and the
+  arrow keys) move through every operation in order.
 - No bold / strong emphasis in the widget.
-- Each layer gets an interactive strip (slider recomputes cells from the
-  formula): attention causal mask, embedding lookup, MLP width, MoE routing,
-  norm features, residual index, RoPE neighborhood, LM head scores.
+- Each layer gets an interactive view. Attention, compressed attention, RoPE,
+  the embedding table, the LM head, and hyper-connection mixes are matrices.
+  Widths, norms, residuals, routing, and token shifts stay one-dimensional.
 - First paint already shows a real query/token position.
 
 ## Rules
@@ -69,5 +77,6 @@ Empty `ops` are filled from `model_arch_viz/formulas.py` by `kind`.
 ## Kind catalog
 
 `embedding`, `rope`, `rmsnorm`, `layernorm`, `attention`, `gqa_attention`,
-`mlp`, `swiglu_mlp`, `moe`, `residual`, `transformer_block`, `conv2d`,
-`vit_patch`, `cross_attention`, `lm_head`, `dropout`, `linear`.
+`mla`, `csa2`, `mhc`, `mlp`, `swiglu_mlp`, `moe`, `deepseek_moe`,
+`engram`, `residual`, `transformer_block`, `conv2d`, `vit_patch`,
+`cross_attention`, `lm_head`, `mtp`, `dspark`, `dropout`, `linear`.

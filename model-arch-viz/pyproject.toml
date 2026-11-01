@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "model-arch-viz"
+version = "0.1.0"
+description = "Visualize model architecture and per-layer math from HF config or paper IR without downloading weights."
+readme = "examples/demo_notebook.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [{ name = "krell11" }]
+dependencies = [
+  "huggingface_hub>=0.23",
+]
+
+[project.optional-dependencies]
+notebook = ["ipython>=8"]
+transformers = ["transformers>=4.40"]
+
+[project.scripts]
+model-arch-viz = "model_arch_viz.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["model_arch_viz*"]
